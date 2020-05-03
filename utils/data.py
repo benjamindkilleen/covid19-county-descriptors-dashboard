@@ -379,7 +379,8 @@ class DashboardData(object):
     fips_to_population = dict(zip(self.fips_codes, self.counties['POP_ESTIMATE_2018']))
 
     # define the daily infections data, same ordering as infections
-    month, day, year = map(int, self.infections.keys()[-1].split('/'))
+    date_key = self.infections.keys()[-1]
+    month, day, year = map(int, date_key.split('/'))
     self.daily_infections_date = dt.date(year, month, day)
     # key = self.daily_infections_date.isoformat() + f' total infections per {self.per_what:,d}'
     infections_per_capita = [row[-1] / fips_to_population[row['FIPS']] * self.per_what
@@ -389,6 +390,35 @@ class DashboardData(object):
        'county_name': [self.fips_to_county_name[fips] for fips in self.infections['FIPS']],
        'infections_per_capita': infections_per_capita,
        'infections': self.infections.iloc[:, -1]})
+
+    self.selected_counties = list(self.infections.nlargest(10, date_key)['FIPS'])
+    self.timeseries_start_index = (np.array(self.infections.iloc[:, 1:]) > 50).any(axis=0).nonzero()[0][0]
+
+    self.selected_features = [
+      "POP_ESTIMATE_2018",
+      "Births_2018",
+      "Deaths_2018",
+      "Some college or associate's degree 2014-18",
+      "POVALL_2018",
+      "Civilian_labor_force_2018",
+      "Employed_2018",
+      "Unemployed_2018",
+      "Median_Household_Income_2018",
+      "Housing units",
+      "Male_age0to17",
+      "Female_age0to17",
+      "Male_age18to64",
+      "Female_age18to64",
+      "Male_age65plus",
+      "Female_age65plus",
+      "ICU Beds",
+      "crime_rate_per_100000"
+    ]
+
+    # make the embedding
+
+  def _embed(self):
+    pass
     
   def _load_timeseries(self, timeseries_name):
     filename = join(self.data_dir, f'{timeseries_name}_timeseries.csv')

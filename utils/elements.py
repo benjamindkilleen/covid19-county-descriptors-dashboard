@@ -62,18 +62,23 @@ def get_counties_dropdown(data):
 
 
 def _get_timeseries_figure(data, timeseries_type):
+  # get top 10 counties by default
+
   assert timeseries_type in ['infections', 'deaths']
   title = f'Confirmed {string.capwords(timeseries_type)}'
-  timeseries = getattr(data, timeseries_type)
+  timeseries = getattr(data, timeseries_type)  
+  timeseries = timeseries.loc[timeseries['FIPS'].isin(set(data.selected_counties))]
 
+  start = data.timeseries_start_index + 1
+  dates = timeseries.keys()[start:]
   data = [
     dict(
-      x=list(range(len(row))),
-      y=row[1:],
-      mode='lines+markers',
+      x=dates,
+      y=row[start:],
+      mode='lines',
       text=data.fips_to_county_name.get(row[0], 'NA'),
       # color=data.fips_to_cluster_labels.get(row[0], 'black'),
-      hoverinfo='text+y')
+      hoverinfo='text+x+y')
     for i, row in timeseries.iterrows()]
 
   layout = dict(
@@ -103,3 +108,5 @@ def get_deaths_display(data):
                    figure=fig,
                    hoverData={'points': [{'customdata': '17031'}]})
 
+def get_counties_embedding_display(data):
+  pass
