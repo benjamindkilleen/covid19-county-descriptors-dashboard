@@ -1,9 +1,14 @@
 from os.path import join, exists
-import string
+from string import capwords
 import numpy as np
 import datetime as dt
 import pandas as pd
-
+import umap
+from sklearn.cluster import DBSCAN
+from sklearn.cluster import AgglomerativeClustering
+from sklearn.cluster import KMeans
+from sklearn.neighbors import NearestNeighbors
+import seaborn as sns
 
 class DashboardData(object):
   data_dir = './data'
@@ -359,7 +364,16 @@ class DashboardData(object):
     "ARSON"
   }
 
+  intervention_keys = [
+    'stay at home',
+    '>50 gatherings',
+    '>500 gatherings',
+    'public schools',
+    'restaurant dine-in',
+    'entertainment/gym']
+
   per_what = 10000
+  threshold = 50
 
   def __init__(self):
     self.counties = pd.read_csv(join(self.data_dir, 'counties.csv'), converters=self.converters)
@@ -367,23 +381,31 @@ class DashboardData(object):
     self.infections = self._load_timeseries('infections')
     self.deaths = self._load_timeseries('deaths')
     self.descriptions = pd.read_csv(join(self.data_dir, 'list_of_columns.csv'), dtype=str)
+    self.availability = pd.read_csv(join(self.data_dir, 'availability.csv'))
+
+    # remove non-counties:
+    is_county = list(map(self._is_county, list(self.counties.loc[:, 'FIPS'])))
+    self.counties = self.counties.iloc[is_county, :]
+    is_county = list(map(self._is_county, list(self.infections.loc[:, 'FIPS'])))
+    self.infections = self.infections.iloc[is_county, :]
+    self.deaths = self.deaths.iloc[is_county, :]
 
     # define the county names list, same ordering as counties
     self.fips_codes = list(self.counties['FIPS'])
     county_names = dict(
       FIPS=self.counties['FIPS'],
-      county_name=[f'{string.capwords(area_name)}, {state}'
+      county_name=[f'{capwords(area_name)}, {state}'
                    for area_name, state in zip(self.counties['Area_Name'], self.counties['State'])])
     self.county_names = pd.DataFrame(county_names)
     self.fips_to_county_name = dict(zip(self.fips_codes, county_names['county_name']))
-    fips_to_population = dict(zip(self.fips_codes, self.counties['POP_ESTIMATE_2018']))
+    self.fips_to_population = dict(zip(self.fips_codes, self.counties['POP_ESTIMATE_2018']))
 
     # define the daily infections data, same ordering as infections
     date_key = self.infections.keys()[-1]
     month, day, year = map(int, date_key.split('/'))
     self.daily_infections_date = dt.date(year, month, day)
     # key = self.daily_infections_date.isoformat() + f' total infections per {self.per_what:,d}'
-    infections_per_capita = [row[-1] / fips_to_population[row['FIPS']] * self.per_what
+    infections_per_capita = [row[-1] / self.fips_to_population[row['FIPS']] * self.per_what
                              for idx, row in self.infections.iterrows()]
     self.total_infections = pd.DataFrame(
       {'FIPS': self.infections['FIPS'],
@@ -391,9 +413,71 @@ class DashboardData(object):
        'infections_per_capita': infections_per_capita,
        'infections': self.infections.iloc[:, -1]})
 
-    self.selected_counties = list(self.infections.nlargest(10, date_key)['FIPS'])
+    # define the start dates for the Analysis mode
+    nonzeros = [np.array(row[1:] >= self.threshold).nonzero()[0] for i, row in self.infections.iterrows()]
+    self.infections_start_indices = [nonzero[0] if nonzero.size > 0 else -1 for nonzero in nonzeros]
+    # self.infections_start_dates = [nonzero[0] if nonzero.size > 0 else -1 for nonzero in nonzeros]
+
+    # figure out the annotations for each FIPS in self.infections
+    dates = [dt.date(int('20' + y), int(m), int(d)) for m, d, y in map(lambda x: x.split('/'), self.infections.keys()[1:])]
+    self.timeseries_dates = [d.isoformat() for d in dates]
+    timeseries_ordinal_dates = [d.toordinal() for d in dates]
+    infections_start_dates_ordinal = [timeseries_ordinal_dates[i] for i in self.infections_start_indices]
+    fips_to_interventions_row = dict((row[0], row) for i, row in self.interventions.iterrows())
+
     self.timeseries_start_index = (np.array(self.infections.iloc[:, 1:]) > 50).any(axis=0).nonzero()[0][0]
 
+    # make annotations for the selected intervention on the graphs
+    self.raw_infections_annotations = {}       # (fips, intervention) -> annotation dict
+    self.raw_deaths_annotations = {}       # (fips, intervention key) -> annotation dict
+    self.analysis_infections_annotations = {}       # (fips, intervention) -> annotation dict
+    self.analysis_deaths_annotations = {}       # (fips, intervention key) -> annotation dict
+    for i, row in self.infections.iterrows():
+      fips = row['FIPS']
+      interventions = fips_to_interventions_row[fips]
+      for k in self.intervention_keys:
+        if np.isnan(interventions[k]):          continue
+        d = dt.date.fromordinal(int(interventions[k]))
+        d_idx_raw = int(interventions[k]) - timeseries_ordinal_dates[0]
+
+        kwargs = dict(
+          xref='x',
+          yref='y',
+          text=d.strftime('%b %d'),
+          showarrow=True,
+          arrowhead=0,
+          ax=0,
+          ay=-30,
+          textangle=-90)
+        
+        self.raw_infections_annotations[fips, k] = dict(
+          x=d.isoformat(),
+          y=row[d_idx_raw + 1],
+          **kwargs)
+        
+        self.raw_deaths_annotations[fips, k] = dict(
+          x=d.isoformat(),
+          y=self.deaths.iloc[i, d_idx_raw + 1],
+          **kwargs)
+
+        date_idx = d_idx_raw - self.infections_start_indices[i]
+        if date_idx < 0:
+          continue
+        
+        self.analysis_infections_annotations[fips, k] = dict(
+          x=d_idx_raw - self.infections_start_indices[i],
+          y=row[d_idx_raw + 1] / self.fips_to_population[row[0]] * self.per_what,
+          **kwargs)
+        
+        self.analysis_deaths_annotations[fips, k] = dict(
+          x=d_idx_raw - self.infections_start_indices[i],
+          y=self.deaths.iloc[i, d_idx_raw + 1] / self.fips_to_population[row[0]] * self.per_what,
+          **kwargs)
+
+    # self.selected_county = list(self.infections.nlargest(1, date_key)['FIPS'])[0]
+    self.selected_county = '53033'
+
+    # make initial selected features and embedding
     self.selected_features = [
       "POP_ESTIMATE_2018",
       "Births_2018",
@@ -414,11 +498,91 @@ class DashboardData(object):
       "ICU Beds",
       "crime_rate_per_100000"
     ]
+    self._set_embedding()
 
-    # make the embedding
+    self.selected_counties = self.counties_subset_names['FIPS'][
+      self.cluster_labels == self.fips_to_cluster_label[self.selected_county]]
 
-  def _embed(self):
-    pass
+  def set_selected_county(self, fips):
+    if self.selected_county == fips:
+      return
+    self.selected_county = fips
+    self.selected_cluster = self.fips_to_cluster_label[self.selected_county]
+    self.selected_counties = self.counties_subset_names['FIPS'][
+      self.cluster_labels == self.selected_cluster]
+    
+  def _is_county(self, fips):
+    return fips[2:] != '000'
+    
+  def get_counties_subset(self, selected_features=None):
+    """Get the subset of counties with 100% availability for the selected features
+
+    :returns: (numpy array of counties, df of identifiers for those counties)
+    :rtype: 
+
+    """
+    if selected_features is None:
+      selected_features = self.selected_features
+
+    counties = self.counties.loc[:, selected_features]
+    num_counties = counties.shape[0]
+    which_counties = counties.notnull().values.all(axis=1)
+    self.counties_subset_names = self.county_names.loc[which_counties]
+    self.counties_subset = np.array(counties.iloc[which_counties, :])
+
+    print(f'selected {self.counties_subset.shape[0]} / {num_counties} counties for embedding')
+    return self.counties_subset, self.counties_subset_names
+
+  reducer = umap.UMAP(n_neighbors=10, metric='manhattan', min_dist=0.05)
+  # clusterer = DBSCAN(eps=0.1, min_samples=1, n_jobs=-1)
+  clusterer = AgglomerativeClustering(n_clusters=700)
+  color_palette = sns.color_palette('hls', 10)
+  color_palette = [f'#{int(255*t[0]):02x}{int(255*t[1]):02x}{int(255*t[2]):02x}' for t in color_palette]
+
+  def _embed(self, x):
+    print('FOR FAST DEBUGGING ONLY')
+    fname = join('tmp', 'embedding.npy')
+
+    # normalize each column to zero mean, unit variance
+    x = (x - x.mean(axis=0, keepdims=True)) / np.sqrt(x.var(axis=0, keepdims=True) + 0.0001)
+    
+    if exists(fname) and False:
+      embedding = np.load(fname)
+    else:
+      print('embedding...')
+      embedding = self.reducer.fit_transform(x)
+      np.save(fname, embedding)
+    return embedding
+
+  def _cluster(self, x):
+    print('FOR FAST DEBUGGING ONLY')
+    fname = join('tmp', 'clustering.npy')
+    if exists(fname) and False:
+      labels = np.load(fname)
+    else:
+      print('clustering...')
+      self.clusterer.fit(x)
+      labels = self.clusterer.labels_
+      np.save(fname, labels)
+    return labels.astype(str)
+
+  def _set_embedding(self, selected_features=None):
+    counties_subset, counties_subset_names = self.get_counties_subset(selected_features=selected_features)
+    self.embedding = self._embed(counties_subset)
+    self.cluster_labels = self._cluster(self.embedding)
+    self.fips_to_cluster_label = dict(zip(counties_subset_names['FIPS'], self.cluster_labels))
+    self.selected_cluster = self.fips_to_cluster_label[self.selected_county]
+    self.unique_cluster_labels = set(self.cluster_labels)
+
+    self.cluster_colors_map = dict(
+      [('-1', '#000000')] + [(str(label), self.color_palette[int(label) % len(self.color_palette)])
+                             for label in self.unique_cluster_labels if label != '-1'])
+    self.cluster_colors = [self.cluster_colors_map[str(label)] for label in self.cluster_labels]
+    self.clustering_df = pd.DataFrame(dict(
+      FIPS=counties_subset_names['FIPS'],
+      county_name=counties_subset_names['county_name'],
+      cluster=self.cluster_labels.astype(str)))
+    return self.embedding
     
   def _load_timeseries(self, timeseries_name):
     filename = join(self.data_dir, f'{timeseries_name}_timeseries.csv')
