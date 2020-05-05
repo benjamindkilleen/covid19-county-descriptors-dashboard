@@ -8,6 +8,7 @@ from sklearn.cluster import DBSCAN
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.cluster import KMeans
 from sklearn.neighbors import NearestNeighbors
+from scipy.signal import savgol_filter
 import seaborn as sns
 
 class DashboardData(object):
@@ -383,6 +384,10 @@ class DashboardData(object):
     self.descriptions = pd.read_csv(join(self.data_dir, 'list_of_columns.csv'), dtype=str)
     self.availability = pd.read_csv(join(self.data_dir, 'availability.csv'))
 
+    # get the gradient of the time series
+    self.infections_gradient = self.get_gradient(self.infections)
+    self.deaths_gradient = self.get_gradient(self.deaths)
+
     # remove non-counties:
     is_county = list(map(self._is_county, list(self.counties.loc[:, 'FIPS'])))
     self.counties = self.counties.iloc[is_county, :]
@@ -428,15 +433,16 @@ class DashboardData(object):
     self.timeseries_start_index = (np.array(self.infections.iloc[:, 1:]) > 50).any(axis=0).nonzero()[0][0]
 
     # make annotations for the selected intervention on the graphs
-    self.raw_infections_annotations = {}       # (fips, intervention) -> annotation dict
-    self.raw_deaths_annotations = {}       # (fips, intervention key) -> annotation dict
-    self.analysis_infections_annotations = {}       # (fips, intervention) -> annotation dict
-    self.analysis_deaths_annotations = {}       # (fips, intervention key) -> annotation dict
+    self.infections_annotations = {}       # (fips, intervention) -> annotation dict
+    self.deaths_annotations = {}       # (fips, intervention key) -> annotation dict
+    self.threshold_infections_annotations = {}       # (fips, intervention) -> annotation dict
+    self.threshold_deaths_annotations = {}       # (fips, intervention key) -> annotation dict
     for i, row in self.infections.iterrows():
       fips = row['FIPS']
       interventions = fips_to_interventions_row[fips]
       for k in self.intervention_keys:
-        if np.isnan(interventions[k]):          continue
+        if np.isnan(interventions[k]):
+          continue
         d = dt.date.fromordinal(int(interventions[k]))
         d_idx_raw = int(interventions[k]) - timeseries_ordinal_dates[0]
 
@@ -449,14 +455,16 @@ class DashboardData(object):
           ax=0,
           ay=-30,
           textangle=-90)
-        
-        self.raw_infections_annotations[fips, k] = dict(
+
+        self.infections_annotations[fips, k] = dict(
           x=d.isoformat(),
+          xidx=d_idx_raw + 1,
           y=row[d_idx_raw + 1],
           **kwargs)
         
-        self.raw_deaths_annotations[fips, k] = dict(
+        self.deaths_annotations[fips, k] = dict(
           x=d.isoformat(),
+          xidx=d_idx_raw + 1,
           y=self.deaths.iloc[i, d_idx_raw + 1],
           **kwargs)
 
@@ -464,13 +472,15 @@ class DashboardData(object):
         if date_idx < 0:
           continue
         
-        self.analysis_infections_annotations[fips, k] = dict(
+        self.threshold_infections_annotations[fips, k] = dict(
           x=d_idx_raw - self.infections_start_indices[i],
+          xidx=d_idx_raw + 1,
           y=row[d_idx_raw + 1] / self.fips_to_population[row[0]] * self.per_what,
           **kwargs)
         
-        self.analysis_deaths_annotations[fips, k] = dict(
+        self.threshold_deaths_annotations[fips, k] = dict(
           x=d_idx_raw - self.infections_start_indices[i],
+          xidx=d_idx_raw + 1,
           y=self.deaths.iloc[i, d_idx_raw + 1] / self.fips_to_population[row[0]] * self.per_what,
           **kwargs)
 
@@ -479,7 +489,7 @@ class DashboardData(object):
 
     # make initial selected features and embedding
     self.selected_features = [
-      "POP_ESTIMATE_2018",
+      # "POP_ESTIMATE_2018",
       "Births_2018",
       "Deaths_2018",
       "Some college or associate's degree 2014-18",
@@ -513,6 +523,13 @@ class DashboardData(object):
     
   def _is_county(self, fips):
     return fips[2:] != '000'
+
+  def get_gradient(self, timeseries):
+    # get the gradient of the time series
+    gradient = np.array([savgol_filter(row[1:], window_length=7, polyorder=3, deriv=1) for i, row in timeseries.iterrows()])
+    gradient = pd.DataFrame(gradient, columns=timeseries.keys()[1:])
+    gradient = pd.concat([timeseries['FIPS'], gradient], axis=1)
+    return gradient
     
   def get_counties_subset(self, selected_features=None):
     """Get the subset of counties with 100% availability for the selected features
@@ -546,7 +563,7 @@ class DashboardData(object):
     # normalize each column to zero mean, unit variance
     x = (x - x.mean(axis=0, keepdims=True)) / np.sqrt(x.var(axis=0, keepdims=True) + 0.0001)
     
-    if exists(fname) and False:
+    if exists(fname):
       embedding = np.load(fname)
     else:
       print('embedding...')
@@ -557,7 +574,7 @@ class DashboardData(object):
   def _cluster(self, x):
     print('FOR FAST DEBUGGING ONLY')
     fname = join('tmp', 'clustering.npy')
-    if exists(fname) and False:
+    if exists(fname):
       labels = np.load(fname)
     else:
       print('clustering...')

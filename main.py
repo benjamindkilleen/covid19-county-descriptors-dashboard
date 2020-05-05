@@ -30,17 +30,25 @@ counties_embedding_panel = html.Div(
     html.Div([counties_clustering_display], style=dict(width='59%', float='right', display='inline-block'))
   ])
 
-infections_display = elements.get_infections_display(data)
-deaths_display = elements.get_deaths_display(data)
+# infections_display = elements.get_infections_display(data)
+# deaths_display = elements.get_deaths_display(data)
+timeseries_display = elements.get_timeseries_display(data)
+timeseries_gradient_display = elements.get_timeseries_gradient_display(data)
+timeseries_type_dropdown = elements.get_timeseries_type_dropdown()
 interventions_dropdown = elements.get_interventions_dropdown(data)
 timeseries_mode_radioitems = elements.get_timeseries_mode_radioitems()
 timeseries_scale_radioitems = elements.get_timeseries_scale_radioitems()
+timeseries_percapita_radioitems = elements.get_timeseries_percapita_radioitems(data)
 selected_counties_timeseries_panel = html.Div(
   [
-    html.Div([infections_display, deaths_display],
-             style=dict(width='79%', float='left', display='inline-block')),
-    html.Div([interventions_dropdown, timeseries_mode_radioitems, timeseries_scale_radioitems],
-             style=dict(width='19%', float='right', display='inline-block'))
+    html.Div([timeseries_type_dropdown,
+              interventions_dropdown,
+              timeseries_mode_radioitems,
+              timeseries_scale_radioitems,
+              timeseries_percapita_radioitems],
+             style=dict(width='19%', float='left', display='inline-block')),
+    html.Div([timeseries_display, timeseries_gradient_display],
+             style=dict(width='79%', float='right', display='inline-block'))
   ])
 
 # define the app and its layout
@@ -48,7 +56,7 @@ external_stylesheets = ['https://codepen.io/chriddyp/pen/bWLwgP.css']
 app = dash.Dash(__name__, external_stylesheets=external_stylesheets)
 app.layout = html.Div(
   [
-    dashboard_header,
+    # dashboard_header,
     counties_display,
     counties_dropdown,
     counties_embedding_panel,
@@ -87,27 +95,32 @@ def update_clustering_display(fips):
 
 
 @app.callback(
-  Output('infections-display', 'figure'),
+  Output('timeseries-display', 'figure'),
   [Input('counties-dropdown', 'value'),
+   Input('timeseries-type-dropdown', 'value'),
    Input('interventions-dropdown', 'value'),
    Input('timeseries-mode-radioitems', 'value'),
-   Input('timeseries-scale-radioitems', 'value')])
-def update_infections_display(fips, intervention, mode, scale):
+   Input('timeseries-scale-radioitems', 'value'),
+   Input('timeseries-percapita-radioitems', 'value')])
+def update_timeseries_display(fips, timeseries_type, intervention, mode, scale, per_capita):
   data.set_selected_county(fips)
-  return elements.get_timeseries_figure(data, 'infections', mode=mode, intervention=intervention,
-                                        scale=scale)
+  return elements.get_timeseries_figure(data, timeseries_type, mode=mode, intervention=intervention,
+                                        scale=scale, per_capita=per_capita == 'per_capita')
 
 
 @app.callback(
-  Output('deaths-display', 'figure'),
+  Output('timeseries-gradient-display', 'figure'),
   [Input('counties-dropdown', 'value'),
+   Input('timeseries-type-dropdown', 'value'),
    Input('interventions-dropdown', 'value'),
    Input('timeseries-mode-radioitems', 'value'),
-   Input('timeseries-scale-radioitems', 'value')])
-def update_deaths_display(fips, intervention, mode, scale):
+   Input('timeseries-scale-radioitems', 'value'),
+   Input('timeseries-percapita-radioitems', 'value')])
+def update_gradient_display(fips, timeseries_type, intervention, mode, scale, per_capita):
   data.set_selected_county(fips)
-  return elements.get_timeseries_figure(data, 'deaths', mode=mode, intervention=intervention,
-                                        scale=scale)
+  return elements.get_timeseries_figure(data, timeseries_type, mode=mode, intervention=intervention,
+                                        scale=scale, per_capita=per_capita == 'per_capita',
+                                        gradient=True)
 
 
 if __name__ == '__main__':

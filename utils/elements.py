@@ -44,8 +44,16 @@ def get_counties_display(data):
     range_color=(0, color_max),
     labels={'infections_per_capita': f'Infections per {data.per_what:,d}',
             'infections': 'Infections'},
-    title='Infections per {:,d}, {}'.format(data.per_what, data.daily_infections_date.strftime('%B %d, %Y')))
-  fig.update_layout(coloraxis_showscale=False)
+    title='United States COVID-19 Confirmed Cases, {}'.format(data.daily_infections_date.strftime('%B %d, %Y')))
+  fig.update_layout(coloraxis_showscale=True, coloraxis_colorbar=dict(
+    title=f'Infections per {data.per_what:,d}',
+    thicknessmode="pixels",
+    thickness=20,
+    lenmode='pixels',
+    len=200,
+    ticks='outside',
+    dtick=5,
+    yanchor='middle'))
   
   return dcc.Graph(id='counties-display', figure=fig, config={'scrollZoom': False})
 
@@ -58,6 +66,15 @@ def get_counties_dropdown(data):
     multi=False,
     placeholder='Select a county...',
     style={})
+
+
+def get_timeseries_type_dropdown():
+  return dcc.Dropdown(
+    id='timeseries-type-dropdown',
+    options=[{'label': 'Confirmed Cases', 'value': 'infections'}, {'label': 'Deaths', 'value': 'deaths'}],
+    value='infections',
+    multi=False,
+    placeholder='Choose timeseries...')
 
 
 def get_interventions_dropdown(data):
@@ -85,7 +102,23 @@ def get_timeseries_scale_radioitems():
     labelStyle={'display': 'inline-block'})
 
 
-def get_timeseries_figure(data, timeseries_type, mode='Date', threshold=50, intervention='stay at home', scale='Linear'):
+def get_timeseries_percapita_radioitems(data):
+  return dcc.RadioItems(
+    id='timeseries-percapita-radioitems',
+    options=[{'label': 'Absolute', 'value': 'absolute'}, {'label': f'per {data.per_what:,d}', 'value': 'per_capita'}],
+    value='absolute',
+    labelStyle={'display': 'inline-block'})
+
+
+def get_timeseries_figure(
+    data,
+    timeseries_type='infections',
+    mode='Date',
+    threshold=50,
+    intervention='stay at home',
+    scale='Linear',
+    per_capita=False,
+    gradient=False):
   """FIXME! briefly describe function
 
   :param data: 
@@ -97,73 +130,83 @@ def get_timeseries_figure(data, timeseries_type, mode='Date', threshold=50, inte
   """
   
   # get top 10 counties by default
-
   assert timeseries_type in ['infections', 'deaths']
-  timeseries = getattr(data, timeseries_type)  
+  timeseries = getattr(data, timeseries_type + ('_gradient' if gradient else ''))
   timeseries = timeseries.loc[timeseries['FIPS'].isin(set(data.selected_counties))]
 
   color_palette = sns.color_palette('Set1', n_colors=len(data.selected_counties))
   color_palette = [f'#{int(255*t[0]):02x}{int(255*t[1]):02x}{int(255*t[2]):02x}' for t in color_palette]
 
-  if mode == 'Date':
-    start = data.timeseries_start_index
-    dates = data.timeseries_dates[start:]
-    fig_data = [
-      dict(
-        x=dates,
-        y=row[start + 1:],
-        mode='lines',
-        text=data.fips_to_county_name.get(row[0], 'NA'),
-        hoverinfo='text+x+y',
-        line=dict(color=color_palette[i]))
-      for i, (idx, row) in enumerate(timeseries.iterrows())]
+  if gradient:
+    scale = 'Linear'
 
-    layout = dict(
-      title=f'Confirmed {string.capwords(timeseries_type)}',
-      showlegend=False,
-      yaxis={'type': 'log' if scale == 'Log' else 'linear'},
-      xaxis={'title': 'Date'},
-      hovermode='closest',
-      annotations=[])
-
-    # add annotations
-    annotations = getattr(data, f'raw_{timeseries_type}_annotations')
-    for i, fips in enumerate(timeseries['FIPS']):
-      if annotations.get((fips, intervention)) is not None:
-        annotation = annotations[fips, intervention].copy()
-        annotation['arrowcolor'] = color_palette[i]
-        annotation['textfont'] = dict(size=8, color=color_palette[i])
-        layout['annotations'].append(annotation)
-        
-  elif mode == 'Threshold':
-    fig_data = [
-      dict(
-        x=list(range(len(row) - data.infections_start_indices[idx] - 1)),
-        y=row[1:][data.infections_start_indices[idx]:] / data.fips_to_population[row[0]] * data.per_what,
-        mode='lines',
-        text=data.fips_to_county_name.get(row[0], 'NA'),
-        hoverinfo='text+x+y',
-        line=dict(color=color_palette[i]))
-      for i, (idx, row) in enumerate(timeseries.iterrows())]
+  if per_capita:
+    value_func = lambda x, fips: x / data.fips_to_population[fips] * data.per_what
+  else:
+    value_func = lambda x, fips: x
     
-    layout = dict(
-      title=f'Confirmed {string.capwords(timeseries_type)} per {data.per_what:,d}',
-      showlegend=False,
-      xaxis={'title': f'Days since {threshold} Confirmed {string.capwords(timeseries_type)}'},
-      yaxis={'type': 'log' if scale == 'Log' else 'linear'},
-      hovermode='closest',
-      annotations=[])
+  if mode == 'Date':
+    xtitle = 'Date'
+    start = data.timeseries_start_index
+    xfunc = lambda row, idx: data.timeseries_dates[start:]
+    yfunc = lambda row, idx: value_func(row[start + 1:], row[0])
+  elif mode == 'Threshold':
+    xtitle = f'Days since {threshold} Confirmed {string.capwords(timeseries_type)}'
+    xfunc = lambda row, idx: list(range(len(row) - data.infections_start_indices[idx] - 1))
+    yfunc = lambda row, idx: value_func(row[1:][data.infections_start_indices[idx]:], row[0])
+    
+  fig_data = [
+    dict(
+      x=xfunc(row, idx),
+      y=yfunc(row, idx),
+      mode='lines',
+      name=data.fips_to_county_name.get(row[0], 'NA'),
+      text=data.fips_to_county_name.get(row[0], 'NA'),
+      hoverinfo='text+x+y',
+      line=dict(color=color_palette[i]), shape='spline' if gradient else 'linear', smoothing=2)
+    for i, (idx, row) in enumerate(timeseries.iterrows())]
 
-    # add annotations
-    annotations = getattr(data, f'analysis_{timeseries_type}_annotations')
-    for i, fips in enumerate(timeseries['FIPS']):
-      if annotations.get((fips, intervention)) is not None:
-        annotation = annotations[fips, intervention].copy()
-        annotation['arrowcolor'] = color_palette[i]
-        annotation['textfont'] = dict(size=8, color=color_palette[i])
-        layout['annotations'].append(annotation)
+  title = f'{string.capwords(timeseries_type)}'
+  if gradient:
+    title += ' per Day (smoothed)'
+  if per_capita:
+    title += f', per {data.per_what:,d}'
+  
+  layout = dict(
+    title=title,
+    # showlegend=False,
+    yaxis={'type': 'log' if scale == 'Log' else 'linear'},
+    xaxis={'title': xtitle},
+    hovermode='closest',
+    annotations=[])
+
+  # add annotations
+  annotations = getattr(data, ('threshold_' if mode == 'Threshold' else '') + f'{timeseries_type}_annotations')
+  for i, (idx, row) in enumerate(timeseries.iterrows()):
+    fips = row['FIPS']
+    if annotations.get((fips, intervention)) is None:
+      continue
+    # if mode == 'Threshold' and annotations[fips, intervention]['x'] > len(fig_data[i]['x']):
+    #   continue
+    annotation = annotations[fips, intervention].copy()
+    annotation['arrowcolor'] = color_palette[i]
+    annotation['textfont'] = dict(size=8, color=color_palette[i])
+    annotation['y'] = value_func(row[annotation['xidx']], fips)
+    if scale == 'Log':
+      annotation['y'] = np.log10(annotation['y'])
+    layout['annotations'].append(annotation)
     
   return dict(data=fig_data, layout=layout)
+
+
+def get_timeseries_display(data):
+  fig = get_timeseries_figure(data, gradient=False)
+  return dcc.Graph(id=f'timeseries-display', figure=fig)
+
+
+def get_timeseries_gradient_display(data):
+  fig = get_timeseries_figure(data, gradient=True)
+  return dcc.Graph(id=f'timeseries-gradient-display', figure=fig)  
 
 
 def get_infections_display(data):
@@ -239,7 +282,7 @@ def get_counties_clustering_figure(data):
     hover_data=['county_name'],
     scope='usa',
     height=800,
-    title=f'Counties Similar to: {data.fips_to_county_name[data.selected_county]}')
+    title=f'Cluster Neighbors for: {data.fips_to_county_name[data.selected_county]}')
   fig.update_layout(coloraxis_showscale=False)
   return fig
   
