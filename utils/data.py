@@ -1,4 +1,5 @@
 from os.path import join, exists
+import os
 from string import capwords
 import numpy as np
 import datetime as dt
@@ -487,27 +488,6 @@ class DashboardData(object):
     # self.selected_county = list(self.infections.nlargest(1, date_key)['FIPS'])[0]
     self.selected_county = '53033'
 
-    # make initial selected features and embedding
-    self.selected_features = [
-      # "POP_ESTIMATE_2018",
-      "Births_2018",
-      "Deaths_2018",
-      "Some college or associate's degree 2014-18",
-      "POVALL_2018",
-      "Civilian_labor_force_2018",
-      "Employed_2018",
-      "Unemployed_2018",
-      "Median_Household_Income_2018",
-      "Housing units",
-      "Male_age0to17",
-      "Female_age0to17",
-      "Male_age18to64",
-      "Female_age18to64",
-      "Male_age65plus",
-      "Female_age65plus",
-      "ICU Beds",
-      "crime_rate_per_100000"
-    ]
     self._set_embedding()
 
     self.selected_counties = self.counties_subset_names['FIPS'][
@@ -552,41 +532,84 @@ class DashboardData(object):
 
   reducer = umap.UMAP(n_neighbors=10, metric='manhattan', min_dist=0.05)
   # clusterer = DBSCAN(eps=0.1, min_samples=1, n_jobs=-1)
-  clusterer = AgglomerativeClustering(n_clusters=700)
+  clusterer = AgglomerativeClustering(n_clusters=650)
   color_palette = sns.color_palette('hls', 10)
   color_palette = [f'#{int(255*t[0]):02x}{int(255*t[1]):02x}{int(255*t[2]):02x}' for t in color_palette]
+  output_dir = 'output'
+  if not exists(output_dir):
+    os.mkdir(output_dir)
 
-  def _embed(self, x):
+  selected_features = [
+    "Some college or associate's degree 2014-18",
+    "POVALL_2018",
+    "Unemployed_2018",
+    "Median_Household_Income_2018",
+    "Housing units",
+    "Male_age0to17",
+    "Female_age0to17",
+    "Male_age18to64",
+    "Female_age18to64",
+    "Male_age65plus",
+    "Female_age65plus",
+    "Density per square mile of land area - Housing units",
+    "ICU Beds",
+    "crime_rate_per_100000",
+    "transit_scores - population weighted averages aggregated from town/city level to county"
+  ]
+
+  features_to_normalize = {
+    "Some college or associate's degree 2014-18",
+    "POVALL_2018",
+    "Unemployed_2018",
+    "Housing units",
+    "Male_age0to17",
+    "Female_age0to17",
+    "Male_age18to64",
+    "Female_age18to64",
+    "Male_age65plus",
+    "Female_age65plus",
+    "ICU Beds",
+  }
+    
+  def _embed(self, x, fips_codes):
     print('FOR FAST DEBUGGING ONLY')
-    fname = join('tmp', 'embedding.npy')
+    fname = join(self.output_dir, 'embedding.npy')
 
     # normalize each column to zero mean, unit variance
+    for j, feature in enumerate(self.selected_features):
+      if feature in self.features_to_normalize:
+        for i, fips in enumerate(fips_codes):
+          x[i, j] /= self.fips_to_population[fips]
+
     x = (x - x.mean(axis=0, keepdims=True)) / np.sqrt(x.var(axis=0, keepdims=True) + 0.0001)
     
-    if exists(fname):
+    if exists(fname) and False:
       embedding = np.load(fname)
     else:
       print('embedding...')
       embedding = self.reducer.fit_transform(x)
       np.save(fname, embedding)
+      pd.DataFrame(dict(FIPS=fips_codes, x=embedding[:, 0], y=embedding[:, 1])).to_csv(join(self.output_dir, 'embedding.csv'))
     return embedding
 
-  def _cluster(self, x):
+  def _cluster(self, x, fips_codes):
     print('FOR FAST DEBUGGING ONLY')
-    fname = join('tmp', 'clustering.npy')
-    if exists(fname):
+    fname = join(self.output_dir, 'clustering.npy')
+    if exists(fname) and False:
       labels = np.load(fname)
     else:
       print('clustering...')
       self.clusterer.fit(x)
       labels = self.clusterer.labels_
       np.save(fname, labels)
+      pd.DataFrame(dict(FIPS=fips_codes, x=x[:, 0], y=x[:, 1], cluster=labels)).to_csv(join(self.output_dir, 'clustering.csv'))
     return labels.astype(str)
 
   def _set_embedding(self, selected_features=None):
     counties_subset, counties_subset_names = self.get_counties_subset(selected_features=selected_features)
-    self.embedding = self._embed(counties_subset)
-    self.cluster_labels = self._cluster(self.embedding)
+    subset_fips_codes = list(counties_subset_names['FIPS'])
+    self.embedding = self._embed(counties_subset, subset_fips_codes)
+    self.cluster_labels = self._cluster(self.embedding, subset_fips_codes)
     self.fips_to_cluster_label = dict(zip(counties_subset_names['FIPS'], self.cluster_labels))
     self.selected_cluster = self.fips_to_cluster_label[self.selected_county]
     self.unique_cluster_labels = set(self.cluster_labels)
