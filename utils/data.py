@@ -631,3 +631,5 @@ class DashboardData(object):
     return timeseries
 
   
+if __name__ == '__main__':
+  DashboardData()
