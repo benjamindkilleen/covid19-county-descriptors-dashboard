@@ -44,7 +44,7 @@ def get_counties_display(data):
     range_color=(0, color_max),
     labels={'infections_per_capita': f'Infections per {data.per_what:,d}',
             'infections': 'Infections'},
-    title='United States COVID-19 Confirmed Cases, {}'.format(data.daily_infections_date.strftime('%B %d, %Y')))
+    title='United States COVID-19 Confirmed Cases, {}'.format(data.daily_infections_date.strftime('%x')))
   fig.update_layout(coloraxis_showscale=True, coloraxis_colorbar=dict(
     title=f'Infections per {data.per_what:,d}',
     thicknessmode="pixels",

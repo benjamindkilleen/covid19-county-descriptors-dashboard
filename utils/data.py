@@ -9,8 +9,11 @@ from sklearn.cluster import DBSCAN
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.cluster import KMeans
 from sklearn.neighbors import NearestNeighbors
+from sklearn.mixture import GaussianMixture
 from scipy.signal import savgol_filter
 import seaborn as sns
+from plotly import graph_objects as go
+
 
 class DashboardData(object):
   data_dir = './data'
@@ -530,9 +533,11 @@ class DashboardData(object):
     print(f'selected {self.counties_subset.shape[0]} / {num_counties} counties for embedding')
     return self.counties_subset, self.counties_subset_names
 
-  reducer = umap.UMAP(n_neighbors=10, metric='manhattan', min_dist=0.05)
-  # clusterer = DBSCAN(eps=0.1, min_samples=1, n_jobs=-1)
-  clusterer = AgglomerativeClustering(n_clusters=650)
+  reducer = umap.UMAP(n_neighbors=3, min_dist=0.03)  # metric=manhattan?v
+  # clusterer = DBSCAN(eps=0.3, min_samples=5, n_jobs=-1)
+  num_clusters = 5
+  clusterer = GaussianMixture(n_components=num_clusters)
+  # clusterer = AgglomerativeClustering(n_clusters=num_clusters, linkage='average', affinity='manhattan')  # 650?
   color_palette = sns.color_palette('hls', 10)
   color_palette = [f'#{int(255*t[0]):02x}{int(255*t[1]):02x}{int(255*t[2]):02x}' for t in color_palette]
   output_dir = 'output'
@@ -540,6 +545,9 @@ class DashboardData(object):
     os.mkdir(output_dir)
 
   selected_features = [
+    "POP_ESTIMATE_2018",
+    # "N_POP_CHG_2018",
+    # "NATURAL_INC_2018",
     "Some college or associate's degree 2014-18",
     "POVALL_2018",
     "Unemployed_2018",
@@ -551,13 +559,18 @@ class DashboardData(object):
     "Female_age18to64",
     "Male_age65plus",
     "Female_age65plus",
-    "Density per square mile of land area - Housing units",
-    "ICU Beds",
-    "crime_rate_per_100000",
-    "transit_scores - population weighted averages aggregated from town/city level to county"
+    "Area in square miles - Land area",
+    "Density per square mile of land area - Population",    
+    # "Density per square mile of land area - Housing units",
+    # "ICU Beds",
+    # "crime_rate_per_100000",
+    # "COVERAGE INDICATOR",
+    "transit_scores - population weighted averages aggregated from town/city level to county",
   ]
 
   features_to_normalize = {
+    "N_POP_CHG_2018",
+    "NATURAL_INC_2018",
     "Some college or associate's degree 2014-18",
     "POVALL_2018",
     "Unemployed_2018",
@@ -568,48 +581,87 @@ class DashboardData(object):
     "Female_age18to64",
     "Male_age65plus",
     "Female_age65plus",
+    "Housing units",
     "ICU Beds",
   }
     
-  def _embed(self, x, fips_codes):
+  def _embed(self, x, fips_codes, normalize=True):
     print('FOR FAST DEBUGGING ONLY')
     fname = join(self.output_dir, 'embedding.npy')
 
-    # normalize each column to zero mean, unit variance
-    for j, feature in enumerate(self.selected_features):
-      if feature in self.features_to_normalize:
-        for i, fips in enumerate(fips_codes):
-          x[i, j] /= self.fips_to_population[fips]
+    if normalize:
+      for j, feature in enumerate(self.selected_features):
+        if feature in self.features_to_normalize:
+          for i, fips in enumerate(fips_codes):
+            x[i, j] /= self.fips_to_population[fips]
 
-    x = (x - x.mean(axis=0, keepdims=True)) / np.sqrt(x.var(axis=0, keepdims=True) + 0.0001)
+      # x = (x - x.mean(axis=0, keepdims=True)) / np.sqrt(x.var(axis=0, keepdims=True) + 0.0001)
     
-    if exists(fname) and False:
+    if exists(fname) and __name__ != '__main__':
       embedding = np.load(fname)
     else:
       print('embedding...')
       embedding = self.reducer.fit_transform(x)
       np.save(fname, embedding)
       pd.DataFrame(dict(FIPS=fips_codes, x=embedding[:, 0], y=embedding[:, 1])).to_csv(join(self.output_dir, 'embedding.csv'))
+
+    # self._plot_features(embedding, fips_codes)
+      
     return embedding
 
-  def _cluster(self, x, fips_codes):
+  def _cluster(self, x, fips_codes, normalize=True):
     print('FOR FAST DEBUGGING ONLY')
     fname = join(self.output_dir, 'clustering.npy')
-    if exists(fname) and False:
+
+    if normalize:
+      # normalize each column to zero mean, unit variance
+      for j, feature in enumerate(self.selected_features):
+        if feature in self.features_to_normalize:
+          for i, fips in enumerate(fips_codes):
+            x[i, j] /= self.fips_to_population[fips]
+          
+      # x = (x - x.mean(axis=0, keepdims=True)) / np.sqrt(x.var(axis=0, keepdims=True) + 0.0001)
+    
+    if exists(fname) and __name__ != '__main__':
       labels = np.load(fname)
     else:
       print('clustering...')
-      self.clusterer.fit(x)
-      labels = self.clusterer.labels_
+      labels = self.clusterer.fit_predict(x)
+      # labels = self.clusterer.labels_
       np.save(fname, labels)
-      pd.DataFrame(dict(FIPS=fips_codes, x=x[:, 0], y=x[:, 1], cluster=labels)).to_csv(join(self.output_dir, 'clustering.csv'))
+      pd.DataFrame(dict(FIPS=fips_codes, x=x[:, 0], y=x[:, 1], cluster=labels)).to_csv(
+        join(self.output_dir, 'clustering.csv'))
+      # pd.DataFrame(dict(FIPS=fips_codes, x=x[:, 0], y=x[:, 1], cluster=labels)).to_csv(
+      #   join('..', 'npi-model', 'data', 'us_data', 'clustering.csv'))
     return labels.astype(str)
 
+  def _plot_features(self, x, fips_codes):
+    counties = self.counties[self.counties['FIPS'].isin(fips_codes)]
+    county_names = [self.fips_to_county_name[fips] for fips in fips_codes]
+    
+    for feature in self.selected_features:
+      fig = go.Figure(go.Scatter(
+        x=x[:, 0],
+        y=x[:, 1],
+        text=[f'{county_name}; {feature}: ' + (f'{value:,d}' if isinstance(value, int) else f'{value}')
+              for county_name, value in zip(county_names, counties[feature])],
+        hoverinfo='text+x+y',
+        mode='markers',
+        marker=dict(
+          size=5,
+          line={'width': 0.5, 'color': 'white'},
+          color=np.log(counties[feature]),
+          # colorscale='Magma',
+          # showscale=False,
+        )))
+      fig.show()
+  
   def _set_embedding(self, selected_features=None):
     counties_subset, counties_subset_names = self.get_counties_subset(selected_features=selected_features)
     subset_fips_codes = list(counties_subset_names['FIPS'])
+    self.clustering_fips_codes = subset_fips_codes
     self.embedding = self._embed(counties_subset, subset_fips_codes)
-    self.cluster_labels = self._cluster(self.embedding, subset_fips_codes)
+    self.cluster_labels = self._cluster(counties_subset, subset_fips_codes)
     self.fips_to_cluster_label = dict(zip(counties_subset_names['FIPS'], self.cluster_labels))
     self.selected_cluster = self.fips_to_cluster_label[self.selected_county]
     self.unique_cluster_labels = set(self.cluster_labels)
@@ -630,6 +682,17 @@ class DashboardData(object):
     timeseries = timeseries.drop(labels='Combined_Key', axis=1)
     return timeseries
 
-  
+  def cluster_statistics(self):
+    for cluster in range(self.num_clusters):
+      fips_codes = set([fips for i, fips in enumerate(list(self.clustering_fips_codes)) if int(self.cluster_labels[i]) == cluster])
+      summary = self.counties.loc[self.counties['FIPS'].isin(fips_codes), self.selected_features].describe()
+      print(f'cluster {cluster}:')
+      print(summary)
+      summary.to_csv(f'cluster_{cluster}_summary.csv')
+      
+
+
 if __name__ == '__main__':
-  DashboardData()
+  data = DashboardData()
+  data.cluster_statistics()
+  
