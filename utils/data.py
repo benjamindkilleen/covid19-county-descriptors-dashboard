@@ -528,10 +528,10 @@ class DashboardData(object):
     num_counties = counties.shape[0]
     which_counties = counties.notnull().values.all(axis=1)
     self.counties_subset_names = self.county_names.loc[which_counties]
-    self.counties_subset = np.array(counties.iloc[which_counties, :])
+    self.counties_subset = counties.iloc[which_counties, :]
 
     print(f'selected {self.counties_subset.shape[0]} / {num_counties} counties for embedding')
-    return self.counties_subset, self.counties_subset_names
+    return np.array(self.counties_subset), self.counties_subset_names
 
   reducer = umap.UMAP(n_neighbors=3, min_dist=0.03)  # metric=manhattan?v
   # clusterer = DBSCAN(eps=0.3, min_samples=5, n_jobs=-1)
@@ -546,8 +546,6 @@ class DashboardData(object):
 
   selected_features = [
     "POP_ESTIMATE_2018",
-    # "N_POP_CHG_2018",
-    # "NATURAL_INC_2018",
     "Some college or associate's degree 2014-18",
     "POVALL_2018",
     "Unemployed_2018",
@@ -561,12 +559,12 @@ class DashboardData(object):
     "Female_age65plus",
     "Area in square miles - Land area",
     "Density per square mile of land area - Population",    
+    "transit_scores - population weighted averages aggregated from town/city level to county",
+  ]
     # "Density per square mile of land area - Housing units",
     # "ICU Beds",
     # "crime_rate_per_100000",
     # "COVERAGE INDICATOR",
-    "transit_scores - population weighted averages aggregated from town/city level to county",
-  ]
 
   features_to_normalize = {
     "N_POP_CHG_2018",
@@ -586,6 +584,7 @@ class DashboardData(object):
   }
     
   def _embed(self, x, fips_codes, normalize=True):
+    x = x.copy()
     print('FOR FAST DEBUGGING ONLY')
     fname = join(self.output_dir, 'embedding.npy')
 
@@ -610,16 +609,17 @@ class DashboardData(object):
     return embedding
 
   def _cluster(self, x, fips_codes, normalize=True):
+    x = x.copy()
     print('FOR FAST DEBUGGING ONLY')
     fname = join(self.output_dir, 'clustering.npy')
-
+    
     if normalize:
       # normalize each column to zero mean, unit variance
       for j, feature in enumerate(self.selected_features):
         if feature in self.features_to_normalize:
           for i, fips in enumerate(fips_codes):
             x[i, j] /= self.fips_to_population[fips]
-          
+
       # x = (x - x.mean(axis=0, keepdims=True)) / np.sqrt(x.var(axis=0, keepdims=True) + 0.0001)
     
     if exists(fname) and __name__ != '__main__':
@@ -633,6 +633,8 @@ class DashboardData(object):
         join(self.output_dir, 'clustering.csv'))
       # pd.DataFrame(dict(FIPS=fips_codes, x=x[:, 0], y=x[:, 1], cluster=labels)).to_csv(
       #   join('..', 'npi-model', 'data', 'us_data', 'clustering.csv'))
+
+    print('cluster 0:', x[labels == 0].mean(axis=0))
     return labels.astype(str)
 
   def _plot_features(self, x, fips_codes):
@@ -683,9 +685,37 @@ class DashboardData(object):
     return timeseries
 
   def cluster_statistics(self):
+    self.counties.set_index('FIPS', inplace=True)
     for cluster in range(self.num_clusters):
-      fips_codes = set([fips for i, fips in enumerate(list(self.clustering_fips_codes)) if int(self.cluster_labels[i]) == cluster])
-      summary = self.counties.loc[self.counties['FIPS'].isin(fips_codes), self.selected_features].describe()
+      fips_codes = [fips for i, fips in enumerate(self.clustering_fips_codes) if int(self.cluster_labels[i]) == cluster]
+      cluster_counties = self.counties.loc[fips_codes, self.selected_features]
+
+      # normalize each column to zero mean, unit variance
+      for j, feature in enumerate(self.selected_features):
+        if feature in self.features_to_normalize:
+          for i, fips in enumerate(fips_codes):
+            cluster_counties.loc[fips, feature] /= self.fips_to_population[fips]
+
+      summary = cluster_counties.describe().T
+      printing_order = [
+        "POP_ESTIMATE_2018",
+        "Male_age0to17",
+        "Female_age0to17",
+        "Male_age18to64",
+        "Female_age18to64",
+        "Male_age65plus",
+        "Female_age65plus",
+        "Some college or associate's degree 2014-18",
+        "POVALL_2018",
+        "Unemployed_2018",
+        "Median_Household_Income_2018",
+        "Density per square mile of land area - Population",    
+        "Housing units",
+        "Area in square miles - Land area",
+        "transit_scores - population weighted averages aggregated from town/city level to county",
+      ]
+      summary = summary.loc[printing_order]
+      
       print(f'cluster {cluster}:')
       print(summary)
       summary.to_csv(f'cluster_{cluster}_summary.csv')
