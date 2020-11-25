@@ -5,10 +5,64 @@ import pandas as pd
 from urllib.request import urlopen
 import plotly.express as px
 import seaborn as sns
+from plotly import graph_objects as go
 
 import dash
 import dash_core_components as dcc
 import dash_html_components as html
+
+
+def compute_moving_window(x, window_size, axis=0, mode='left', func='mean'):
+    """Compute the moving average
+
+    :param x: 
+    :param window_size: 
+    :param axis: axis to take the window over.
+    :param mode: one of 'left', 'center', or 'right'. Which side of the current entry to take the average over.
+    :param func: one of 'mean', 'std'
+    :rtype: 
+
+    """
+    assert mode in ['left', 'center', 'right']
+    x = np.array(x)
+
+    if mode == 'center':
+        assert window_size % 2 == 1, 'use an odd-numbered window size for mode == \'center\''
+    window_width = window_size // 2
+    
+    y = np.empty_like(x)
+    for i in range(x.shape[axis]):
+        if mode == 'left':
+            seq = tuple(np.arange(max(i - window_size + 1, 0), i+1) if ax == axis else slice(x.shape[ax]) for ax in range(x.ndim))
+        elif mode == 'center':
+            seq = tuple(np.arange(max(i - window_width + 1, 0), min(i + window_width + 1, x.shape[ax])) if ax == axis else slice(x.shape[ax]) for ax in range(x.ndim))
+        elif mode == 'right':
+            seq = tuple(np.arange(i, min(i + window_size, x.shape[ax])) if ax == axis else slice(x.shape[ax]) for ax in range(x.ndim))
+        else:
+            raise ValueError
+
+        yidx = tuple(i if ax == axis else slice(y.shape[ax]) for ax in range(y.ndim))
+        # print('yidx:', yidx)
+        if func == 'mean':
+            # print('seq:', seq)
+            # print('x[seq]:', x[seq])
+            y[yidx] = x[seq].mean(axis)
+            # print('y[yidx]:', y[yidx])
+            # if (y[yidx] > 0).mean() > 0.5:
+            #     raise ValueError
+        elif func == 'std':
+            y[yidx] = x[seq].std(axis)
+    return y
+
+
+def compute_moving_average(*args, **kwargs):
+    kwargs['func'] = 'mean'
+    return compute_moving_window(*args, **kwargs)
+
+
+def compute_moving_std(*args, **kwargs):
+    kwargs['func'] = 'std'
+    return compute_moving_window(*args, **kwargs)
 
 
 def get_dashboard_header():
@@ -116,8 +170,10 @@ def get_timeseries_figure(
     mode='Date',
     threshold=50,
     intervention='stay at home',
+    interventions=None,
     scale='Linear',
     per_capita=False,
+    daily=False,
     gradient=False):
   """FIXME! briefly describe function
 
@@ -133,6 +189,14 @@ def get_timeseries_figure(
   assert timeseries_type in ['infections', 'deaths']
   timeseries = getattr(data, timeseries_type + ('_gradient' if gradient else ''))
   timeseries = timeseries.loc[timeseries['FIPS'].isin(set(data.selected_counties))]
+
+  if interventions is None:
+    interventions = [intervention]
+
+  if daily:
+    timeseries.iloc[:, 1:] = (timeseries.iloc[:, 1:] -
+                              np.concatenate((np.zeros((timeseries.shape[0], 1)),
+                                              np.array(timeseries.iloc[:, 1:])[:, :-1]), axis=1))
 
   color_palette = sns.color_palette('Set1', n_colors=len(data.selected_counties))
   color_palette = [f'#{int(255*t[0]):02x}{int(255*t[1]):02x}{int(255*t[2]):02x}' for t in color_palette]
@@ -154,19 +218,41 @@ def get_timeseries_figure(
     xtitle = f'Days since {threshold} Confirmed {string.capwords(timeseries_type)}'
     xfunc = lambda row, idx: list(range(len(row) - data.infections_start_indices[idx] - 1))
     yfunc = lambda row, idx: value_func(row[1:][data.infections_start_indices[idx]:], row[0])
-    
+  else:
+    raise ValueError(f'bad mode: {mode}')
+
+  # TODO: these are hot fixes for plotting a single county, fix them for dashboard
+  assert len(data.selected_counties) == 1
+  
   fig_data = [
-    dict(
+    go.Bar(
       x=xfunc(row, idx),
       y=yfunc(row, idx),
-      mode='lines',
-      name=data.fips_to_county_name.get(row[0], 'NA'),
-      text=data.fips_to_county_name.get(row[0], 'NA'),
+      name=f'Daily {timeseries_type}',
+      # name=data.fips_to_county_name.get(row[0], 'NA'),
+      # text=data.fips_to_county_name.get(row[0], 'NA'),
       hoverinfo='text+x+y',
-      line=dict(color=color_palette[i]), shape='spline' if gradient else 'linear', smoothing=2)
+      # mode='lines',
+      # line=dict(color=color_palette[i])
+    )
     for i, (idx, row) in enumerate(timeseries.iterrows())]
 
-  title = f'{string.capwords(timeseries_type)}'
+  fig_data += [
+    dict(
+      x=xfunc(row, idx),
+      y=compute_moving_average(yfunc(row, idx), window_size=7, mode='center'),
+      name='7-day avg',
+      # name=data.fips_to_county_name.get(row[0], 'NA'),
+      # text=data.fips_to_county_name.get(row[0], 'NA'),
+      hoverinfo='text+x+y',
+      mode='lines',
+      line=dict(color='red')
+    )
+    for i, (idx, row) in enumerate(timeseries.iterrows())]
+  
+  title = f'{string.capwords(timeseries_type)} in {data.fips_to_county_name.get(timeseries.iloc[0, 0])}'
+  if daily:
+    title = 'Daily ' + title
   if gradient:
     title += ' per Day (smoothed)'
   if per_capita:
@@ -183,18 +269,35 @@ def get_timeseries_figure(
   # add annotations
   annotations = getattr(data, ('threshold_' if mode == 'Threshold' else '') + f'{timeseries_type}_annotations')
   for i, (idx, row) in enumerate(timeseries.iterrows()):
-    fips = row['FIPS']
-    if annotations.get((fips, intervention)) is None:
-      continue
-    # if mode == 'Threshold' and annotations[fips, intervention]['x'] > len(fig_data[i]['x']):
-    #   continue
-    annotation = annotations[fips, intervention].copy()
-    annotation['arrowcolor'] = color_palette[i]
-    annotation['textfont'] = dict(size=8, color=color_palette[i])
-    annotation['y'] = value_func(row[annotation['xidx']], fips)
-    if scale == 'Log':
-      annotation['y'] = np.log10(annotation['y'])
-    layout['annotations'].append(annotation)
+    for intervention in interventions:
+      fips = row['FIPS']
+      if annotations.get((fips, intervention)) is None:
+        continue
+      # if mode == 'Threshold' and annotations[fips, intervention]['x'] > len(fig_data[i]['x']):
+      #   continue
+      annotation = annotations[fips, intervention].copy()
+      annotation['arrowcolor'] = color_palette[i]
+      annotation['text'] = '- ' + annotation['text'] +  f': {intervention}  '
+      # annotation['textfont'] = dict(size=8, color=color_palette[i])
+      annotation['y'] = value_func(row[annotation['xidx'] + 1], fips)
+
+      # if 'rollback' in annotation['text']:
+      #   annotation['y'] += 95 * len(annotation['text'])
+      # else:
+      #   annotation['y'] += 68 * len(annotation['text'])
+      # if 'dine-in' in annotation['text']:
+      #   annotation['y'] += 10 * len(annotation['text'])
+      # else:
+      annotation['y'] += 5 * len(annotation['text'])
+        # if 'rollback' in annotation['text']:
+      #   annotation['y'] += 10 * len(annotation['text'])
+      # else:
+      #   annotation['y'] += 68 * len(annotation['text'])
+
+      if scale == 'Log':
+        annotation['y'] = np.log10(annotation['y'])
+      del annotation['xidx']
+      layout['annotations'].append(annotation)
     
   return dict(data=fig_data, layout=layout)
 

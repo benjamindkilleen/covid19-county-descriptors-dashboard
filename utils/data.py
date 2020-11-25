@@ -375,7 +375,12 @@ class DashboardData(object):
     '>500 gatherings',
     'public schools',
     'restaurant dine-in',
-    'entertainment/gym']
+    'entertainment/gym',
+    'stay at home rollback',
+    '>50 gatherings rollback',
+    '>500 gatherings rollback',
+    'restaurant dine-in rollback',
+    'entertainment/gym rollback']
 
   per_what = 10000
   threshold = 50
